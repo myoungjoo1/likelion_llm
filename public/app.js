@@ -152,6 +152,11 @@ async function loadModels() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "모델 목록을 불러오지 못했습니다.");
 
+    const defaultOption = modelSelect.querySelector('option[value=""]');
+    if (defaultOption && data.configuredModel) {
+      defaultOption.textContent = `JSON 기본 모델 (${data.configuredModel})`;
+    }
+
     data.models.forEach((model) => {
       const option = document.createElement("option");
       option.value = model;
@@ -159,7 +164,17 @@ async function loadModels() {
       modelSelect.append(option);
     });
 
-    setStatus(data.models.length ? "Ollama 연결됨" : "모델 없음", data.models.length ? "ready" : "error");
+    if (!data.models.length) {
+      setStatus("설치된 모델 없음", "error");
+      return;
+    }
+
+    if (data.configuredModel && !data.configuredModelAvailable) {
+      setStatus(`${data.configuredModel} 설치 필요`, "error");
+      return;
+    }
+
+    setStatus("Ollama 연결됨", "ready");
   } catch (error) {
     setStatus("Ollama 연결 실패", "error");
     console.warn(error);
@@ -198,7 +213,10 @@ async function sendMessage(text) {
 
     if (!response.ok || !response.body) {
       const error = await response.json().catch(() => ({}));
-      throw new Error(error.error || "응답을 받을 수 없습니다.");
+      const message = [error.error, error.detail]
+        .filter(Boolean)
+        .join("\n");
+      throw new Error(message || "응답을 받을 수 없습니다.");
     }
 
     const reader = response.body.getReader();
@@ -222,6 +240,9 @@ async function sendMessage(text) {
         const data = JSON.parse(dataLine.slice(6));
         if (data.sessionId) {
           currentSessionId = data.sessionId;
+        }
+        if (data.error) {
+          throw new Error(data.error);
         }
         if (data.content) {
           assistantMessage.classList.remove("loading");

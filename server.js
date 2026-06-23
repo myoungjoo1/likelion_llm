@@ -11,6 +11,7 @@ const promptPath = join(__dirname, "prompts", "personal-profile.json");
 
 const PORT = Number(process.env.PORT || 3000);
 const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
+const DEFAULT_MODEL = "gemma3:1b";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -33,14 +34,13 @@ async function readJsonBody(req) {
 }
 
 async function loadPersonalPrompt() {
-  const raw = await readFile(promptPath, "utf8");
-  const config = JSON.parse(raw);
+  const config = await readPromptConfig();
   const profileLines = Object.entries(config.profile || {})
     .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
     .map(([key, value]) => `- ${key}: ${value}`);
 
   return {
-    model: config.model || "llama3.2",
+    model: config.model || DEFAULT_MODEL,
     system: [
       config.role || "You are a helpful personal chatbot.",
       "",
@@ -51,6 +51,29 @@ async function loadPersonalPrompt() {
       ...(config.instructions || []).map((item) => `- ${item}`)
     ].join("\n")
   };
+}
+
+async function readPromptConfig() {
+  try {
+    const raw = await readFile(promptPath, "utf8");
+    return JSON.parse(raw);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error("prompts/personal-profile.json 파일이 없습니다. prompts/personal-profile.example.json을 복사해서 만들어 주세요.");
+    }
+    if (error instanceof SyntaxError) {
+      throw new Error("prompts/personal-profile.json 문법이 올바른 JSON이 아닙니다.");
+    }
+    throw error;
+  }
+}
+
+async function fetchOllamaModels() {
+  const response = await fetch(`${OLLAMA_HOST}/api/tags`);
+  if (!response.ok) throw new Error(`Ollama responded with ${response.status}`);
+
+  const data = await response.json();
+  return (data.models || []).map((model) => model.name);
 }
 
 function createSessionId() {
@@ -162,11 +185,17 @@ async function saveSessionMemory(sessionId, messages, model) {
 
 async function proxyOllamaModels(res) {
   try {
-    const response = await fetch(`${OLLAMA_HOST}/api/tags`);
-    if (!response.ok) throw new Error(`Ollama responded with ${response.status}`);
-    const data = await response.json();
+    const [models, config] = await Promise.all([
+      fetchOllamaModels(),
+      readPromptConfig().catch(() => ({ model: DEFAULT_MODEL }))
+    ]);
+    const configuredModel = config.model || DEFAULT_MODEL;
+
     sendJson(res, 200, {
-      models: (data.models || []).map((model) => model.name)
+      models,
+      configuredModel,
+      configuredModelAvailable: models.includes(configuredModel),
+      host: OLLAMA_HOST
     });
   } catch (error) {
     sendJson(res, 503, {
@@ -195,6 +224,17 @@ async function streamChat(req, res) {
     const prompt = await loadPersonalPrompt();
     const model = body.model || prompt.model;
     const sessionId = getSessionId(body.sessionId);
+    const availableModels = await fetchOllamaModels();
+
+    if (!availableModels.includes(model)) {
+      sendJson(res, 400, {
+        error: `Ollama 모델 '${model}'이(가) 설치되어 있지 않습니다.`,
+        detail: `터미널에서 'ollama pull ${model}' 실행 후 다시 시도하세요.`,
+        installedModels: availableModels
+      });
+      return;
+    }
+
     const ollamaResponse = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
