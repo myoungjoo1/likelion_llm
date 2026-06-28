@@ -1,0 +1,54 @@
+name: LLM Chatbot Basic Check
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  basic-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+  
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check prompt JSON files
+        run: |
+          node - <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const targetDirs = ["prompts"];
+
+          function walk(dir) {
+            if (!fs.existsSync(dir)) {
+              console.log(`${dir} 폴더가 없어 검사를 건너뜁니다.`);
+              return;
+            }
+
+            for (const file of fs.readdirSync(dir)) {
+              const fullPath = path.join(dir, file);
+
+              if (fs.statSync(fullPath).isDirectory()) {
+                walk(fullPath);
+              } else if (file.endsWith(".json")) {
+                JSON.parse(fs.readFileSync(fullPath, "utf8"));
+                console.log(`OK: ${fullPath}`);
+              }
+            }
+          }
+
+          for (const dir of targetDirs) {
+            walk(dir);
+          }
+
+          console.log("모든 prompt JSON 파일 검사가 완료되었습니다.");
+          NODE
